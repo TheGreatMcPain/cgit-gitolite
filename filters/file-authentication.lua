@@ -1,4 +1,4 @@
--- This script may be used with the auth-filter. Be sure to configure it as you wish.
+-- This script may be used with the auth-filter.
 --
 -- Requirements:
 -- 	luaossl
@@ -11,27 +11,27 @@ local unistd = require("posix.unistd")
 local rand = require("openssl.rand")
 local hmac = require("openssl.hmac")
 
---
---
--- Configure these variables for your settings.
---
---
+-- This file should contain a series of lines in the form of:
+--	username1:hash1
+--	username2:hash2
+--	username3:hash3
+--	...
+-- Hashes can be generated using something like `mkpasswd -m sha-512 -R 300000`.
+-- This file should not be world-readable.
+local users_filename = "/etc/cgit-auth/users"
 
--- A list of password protected repositories along with the users who can access them.
-local protected_repos = {
-	glouglou	= { laurent = true, jason = true },
-	qt		= { jason = true, bob = true }
-}
+-- This file should contain a series of lines in the form of:
+-- 	groupname1:username1,username2,username3,...
+--	...
+local groups_filename = "/etc/cgit-auth/groups"
 
--- A list of users and hashes, generated with `mkpasswd -m sha-512 -R 300000`.
-local users = {
-	jason		= "$6$rounds=300000$YYJct3n/o.ruYK$HhpSeuCuW1fJkpvMZOZzVizeLsBKcGA/aF2UPuV5v60JyH2MVSG6P511UMTj2F3H75.IT2HIlnvXzNb60FcZH1",
-	laurent		= "$6$rounds=300000$dP0KNHwYb3JKigT$pN/LG7rWxQ4HniFtx5wKyJXBJUKP7R01zTNZ0qSK/aivw8ywGAOdfYiIQFqFhZFtVGvr11/7an.nesvm8iJUi.",
-	bob		= "$6$rounds=300000$jCLCCt6LUpTz$PI1vvd1yaVYcCzqH8QAJFcJ60b6W/6sjcOsU7mAkNo7IE8FRGW1vkjF8I/T5jt/auv5ODLb1L4S2s.CAyZyUC"
-}
+-- This file should contain a series of lines in the form of:
+-- 	reponame1:groupname1,groupname2,groupname3,...
+--	...
+local repos_filename = "/etc/cgit-auth/repos"
 
 -- Set this to a path this script can write to for storing a persistent
--- cookie secret, which should be guarded.
+-- cookie secret, which should not be world-readable.
 local secret_filename = "/var/cache/cgit/auth-secret"
 
 --
@@ -40,9 +40,54 @@ local secret_filename = "/var/cache/cgit/auth-secret"
 --
 --
 
+-- Looks up a hash for a given user.
+function lookup_hash(user)
+	local line
+	for line in io.lines(users_filename) do
+		local u, h = string.match(line, "(.-):(.+)")
+		if u:lower() == user:lower() then
+			return h
+		end
+	end
+	return nil
+end
+
+-- Looks up users for a given repo.
+function lookup_users(repo)
+	local users = nil
+	local groups = nil
+	local line, group, user
+	for line in io.lines(repos_filename) do
+		local r, g = string.match(line, "(.-):(.+)")
+		if r == repo then
+			groups = { }
+			for group in string.gmatch(g, "([^,]+)") do
+				groups[group:lower()] = true
+			end
+			break
+		end
+	end
+	if groups == nil then
+		return nil
+	end
+	for line in io.lines(groups_filename) do
+		local g, u = string.match(line, "(.-):(.+)")
+		if groups[g:lower()] then
+			if users == nil then
+				users = { }
+			end
+			for user in string.gmatch(u, "([^,]+)") do
+				users[user:lower()] = true
+			end
+		end
+	end
+	return users
+end
+
+
 -- Sets HTTP cookie headers based on post and sets up redirection.
 function authenticate_post()
-	local hash = users[post["username"]]
+	local hash = lookup_hash(post["username"])
 	local redirect = validate_value("redirect", post["redirect"])
 
 	if redirect == nil then
@@ -67,7 +112,7 @@ end
 
 -- Returns 1 if the cookie is valid and 0 if it is not.
 function authenticate_cookie()
-	accepted_users = protected_repos[cgit["repo"]]
+	accepted_users = lookup_users(cgit["repo"])
 	if accepted_users == nil then
 		-- We return as valid if the repo is not protected.
 		return 1

@@ -20,10 +20,10 @@ void cgit_parse_url(const char *url)
 	char *c, *cmd, *p;
 	struct cgit_repo *repo;
 
-	ctx.repo = NULL;
 	if (!url || url[0] == '\0')
 		return;
 
+	ctx.qry.page = NULL;
 	ctx.repo = cgit_get_repoinfo(url);
 	if (ctx.repo) {
 		ctx.qry.repo = ctx.repo->url;
@@ -53,7 +53,6 @@ void cgit_parse_url(const char *url)
 		}
 		if (cmd[1])
 			ctx.qry.page = xstrdup(cmd + 1);
-		return;
 	}
 }
 
@@ -64,8 +63,7 @@ static char *substr(const char *head, const char *tail)
 	if (tail < head)
 		return xstrdup("");
 	buf = xmalloc(tail - head + 1);
-	strncpy(buf, head, tail - head);
-	buf[tail - head] = '\0';
+	strlcpy(buf, head, tail - head + 1);
 	return buf;
 }
 
@@ -79,7 +77,7 @@ static void parse_user(const char *t, char **name, char **email, unsigned long *
 
 		email_len = ident.mail_end - ident.mail_begin;
 		*email = xmalloc(strlen("<") + email_len + strlen(">") + 1);
-		sprintf(*email, "<%.*s>", email_len, ident.mail_begin);
+		xsnprintf(*email, email_len + 3, "<%.*s>", email_len, ident.mail_begin);
 
 		if (ident.date_begin)
 			*date = strtoul(ident.date_begin, NULL, 10);
@@ -131,7 +129,7 @@ struct commitinfo *cgit_parse_commit(struct commit *commit)
 {
 	const int sha1hex_len = 40;
 	struct commitinfo *ret;
-	const char *p = get_cached_commit_buffer(commit, NULL);
+	const char *p = repo_get_commit_buffer(the_repository, commit, NULL);
 	const char *t;
 
 	ret = xcalloc(1, sizeof(struct commitinfo));
@@ -201,7 +199,7 @@ struct taginfo *cgit_parse_tag(struct tag *tag)
 	const char *p;
 	struct taginfo *ret = NULL;
 
-	data = read_sha1_file(tag->object.oid.hash, &type, &size);
+	data = read_object_file(&tag->object.oid, &type, &size);
 	if (!data || type != OBJ_TAG)
 		goto cleanup;
 

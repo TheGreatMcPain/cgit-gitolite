@@ -11,15 +11,18 @@
 #include "html.h"
 #include "ui-shared.h"
 
+/* two commit hashes with two dots in between and termination */
+#define REV_RANGE_LEN 2 * GIT_MAX_HEXSZ + 3
+
 void cgit_print_patch(const char *new_rev, const char *old_rev,
 		      const char *prefix)
 {
 	struct rev_info rev;
 	struct commit *commit;
 	struct object_id new_rev_oid, old_rev_oid;
-	char rev_range[2 * 40 + 3];
-	const char *rev_argv[] = { NULL, "--reverse", "--format=email", rev_range, "--", prefix };
-	int rev_argc = ARRAY_SIZE(rev_argv);
+	char rev_range[REV_RANGE_LEN];
+	const char *rev_argv[] = { NULL, "--reverse", "--format=email", rev_range, "--", prefix, NULL };
+	int rev_argc = ARRAY_SIZE(rev_argv) - 1;
 	char *patchname;
 
 	if (!prefix)
@@ -33,7 +36,7 @@ void cgit_print_patch(const char *new_rev, const char *old_rev,
 				"Bad object id: %s", new_rev);
 		return;
 	}
-	commit = lookup_commit_reference(new_rev_oid.hash);
+	commit = lookup_commit_reference(the_repository, &new_rev_oid);
 	if (!commit) {
 		cgit_print_error_page(404, "Not found",
 				"Bad commit reference: %s", new_rev);
@@ -46,7 +49,7 @@ void cgit_print_patch(const char *new_rev, const char *old_rev,
 					"Bad object id: %s", old_rev);
 			return;
 		}
-		if (!lookup_commit_reference(old_rev_oid.hash)) {
+		if (!lookup_commit_reference(the_repository, &old_rev_oid)) {
 			cgit_print_error_page(404, "Not found",
 					"Bad commit reference: %s", old_rev);
 			return;
@@ -60,7 +63,7 @@ void cgit_print_patch(const char *new_rev, const char *old_rev,
 	if (is_null_oid(&old_rev_oid)) {
 		memcpy(rev_range, oid_to_hex(&new_rev_oid), GIT_SHA1_HEXSZ + 1);
 	} else {
-		sprintf(rev_range, "%s..%s", oid_to_hex(&old_rev_oid),
+		xsnprintf(rev_range, REV_RANGE_LEN, "%s..%s", oid_to_hex(&old_rev_oid),
 			oid_to_hex(&new_rev_oid));
 	}
 
@@ -85,14 +88,11 @@ void cgit_print_patch(const char *new_rev, const char *old_rev,
 			DIFF_FORMAT_PATCH | DIFF_FORMAT_SUMMARY;
 	if (prefix)
 		rev.diffopt.stat_sep = fmt("(limited to '%s')\n\n", prefix);
-	setup_revisions(ARRAY_SIZE(rev_argv), rev_argv, &rev,
-			NULL);
+	setup_revisions(rev_argc, rev_argv, &rev, NULL);
 	prepare_revision_walk(&rev);
 
 	while ((commit = get_revision(&rev)) != NULL) {
 		log_tree_commit(&rev, commit);
 		printf("-- \ncgit %s with gitolite patch %s\n\n", cgit_version, cgit_gitolite_version);
 	}
-
-	fflush(stdout);
 }

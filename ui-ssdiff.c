@@ -103,8 +103,7 @@ static int line_from_hunk(char *line, char type)
 		return 0;
 	len = buf2 - buf1;
 	buf2 = xmalloc(len + 1);
-	strncpy(buf2, buf1, len);
-	buf2[len] = '\0';
+	strlcpy(buf2, buf1, len + 1);
 	res = atoi(buf2);
 	free(buf2);
 	return res;
@@ -114,11 +113,11 @@ static char *replace_tabs(char *line)
 {
 	char *prev_buf = line;
 	char *cur_buf;
-	int linelen = strlen(line);
+	size_t linelen = strlen(line);
 	int n_tabs = 0;
 	int i;
 	char *result;
-	char *spaces = "        ";
+	size_t result_len;
 
 	if (linelen == 0) {
 		result = xmalloc(1);
@@ -126,20 +125,26 @@ static char *replace_tabs(char *line)
 		return result;
 	}
 
-	for (i = 0; i < linelen; i++)
+	for (i = 0; i < linelen; i++) {
 		if (line[i] == '\t')
 			n_tabs += 1;
-	result = xmalloc(linelen + n_tabs * 8 + 1);
+	}
+	result_len = linelen + n_tabs * 8;
+	result = xmalloc(result_len + 1);
 	result[0] = '\0';
 
-	while (1) {
+	for (;;) {
 		cur_buf = strchr(prev_buf, '\t');
 		if (!cur_buf) {
-			strcat(result, prev_buf);
+			linelen = strlen(result);
+			strlcpy(&result[linelen], prev_buf, result_len - linelen + 1);
 			break;
 		} else {
-			strncat(result, prev_buf, cur_buf - prev_buf);
-			strncat(result, spaces, 8 - (strlen(result) % 8));
+			linelen = strlen(result);
+			strlcpy(&result[linelen], prev_buf, cur_buf - prev_buf + 1);
+			linelen = strlen(result);
+			memset(&result[linelen], ' ', 8 - (linelen % 8));
+			result[linelen + 8 - (linelen % 8)] = '\0';
 		}
 		prev_buf = cur_buf + 1;
 	}
@@ -204,11 +209,13 @@ static void print_part_with_lcs(char *class, char *line, char *lcs)
 			}
 		} else if (line[i] == lcs[j]) {
 			same = 1;
-			htmlf("</span>");
+			html("</span>");
 			j += 1;
 		}
 		html_txt(c);
 	}
+	if (!same)
+		html("</span>");
 }
 
 static void print_ssdiff_line(char *class,
@@ -233,7 +240,7 @@ static void print_ssdiff_line(char *class,
 		char *fileurl = cgit_fileurl(ctx.repo->url, "tree", old_file->path, id_str);
 		html("<td class='lineno'><a href='");
 		html(fileurl);
-		htmlf("' id='%s'>%s</a>", lineno_str, lineno_str + 1);
+		htmlf("'>%s</a>", lineno_str + 1);
 		html("</td>");
 		htmlf("<td class='%s'>", class);
 		free(fileurl);
@@ -256,7 +263,7 @@ static void print_ssdiff_line(char *class,
 		char *fileurl = cgit_fileurl(ctx.repo->url, "tree", new_file->path, id_str);
 		html("<td class='lineno'><a href='");
 		html(fileurl);
-		htmlf("' id='%s'>%s</a>", lineno_str, lineno_str + 1);
+		htmlf("'>%s</a>", lineno_str + 1);
 		html("</td>");
 		htmlf("<td class='%s'>", class);
 		free(fileurl);
@@ -402,7 +409,7 @@ void cgit_ssdiff_header_begin(void)
 
 void cgit_ssdiff_header_end(void)
 {
-	html("</td><tr>");
+	html("</td></tr>");
 }
 
 void cgit_ssdiff_footer(void)

@@ -1,6 +1,6 @@
 /* ui-shared.c: common web output functions
  *
- * Copyright (C) 2006-2014 cgit Development Team <cgit@lists.zx2c4.com>
+ * Copyright (C) 2006-2017 cgit Development Team <cgit@lists.zx2c4.com>
  *
  * Licensed under GNU General Public License v2
  *   (see COPYING for full license text)
@@ -10,6 +10,7 @@
 #include "ui-shared.h"
 #include "cmd.h"
 #include "html.h"
+#include "version.h"
 
 static const char cgit_doctype[] =
 "<!DOCTYPE html>\n";
@@ -67,13 +68,46 @@ char *cgit_hosturl(void)
 char *cgit_currenturl(void)
 {
 	const char *root = cgit_rooturl();
-	size_t len = strlen(root);
 
 	if (!ctx.qry.url)
 		return xstrdup(root);
-	if (len && root[len - 1] == '/')
+	if (root[0] && root[strlen(root) - 1] == '/')
 		return fmtalloc("%s%s", root, ctx.qry.url);
 	return fmtalloc("%s/%s", root, ctx.qry.url);
+}
+
+char *cgit_currentfullurl(void)
+{
+	const char *root = cgit_rooturl();
+	const char *orig_query = ctx.env.query_string ? ctx.env.query_string : "";
+	size_t len = strlen(orig_query);
+	char *query = xmalloc(len + 2), *start_url, *ret;
+
+	/* Remove all url=... parts from query string */
+	memcpy(query + 1, orig_query, len + 1);
+	query[0] = '?';
+	start_url = query;
+	while ((start_url = strstr(start_url, "url=")) != NULL) {
+		if (start_url[-1] == '?' || start_url[-1] == '&') {
+			const char *end_url = strchr(start_url, '&');
+			if (end_url)
+				memmove(start_url, end_url + 1, strlen(end_url));
+			else
+				start_url[0] = '\0';
+		} else
+			++start_url;
+	}
+	if (!query[1])
+		query[0] = '\0';
+
+	if (!ctx.qry.url)
+		ret = fmtalloc("%s%s", root, query);
+	else if (root[0] && root[strlen(root) - 1] == '/')
+		ret = fmtalloc("%s%s%s", root, ctx.qry.url, query);
+	else
+		ret = fmtalloc("%s/%s%s", root, ctx.qry.url, query);
+	free(query);
+	return ret;
 }
 
 const char *cgit_rooturl(void)
@@ -132,23 +166,36 @@ const char *cgit_repobasename(const char *reponame)
 	static char rvbuf[1024];
 	int p;
 	const char *rv;
-	strncpy(rvbuf, reponame, sizeof(rvbuf));
-	if (rvbuf[sizeof(rvbuf)-1])
+	size_t len;
+
+	len = strlcpy(rvbuf, reponame, sizeof(rvbuf));
+	if (len >= sizeof(rvbuf))
 		die("cgit_repobasename: truncated repository name '%s'", reponame);
-	p = strlen(rvbuf)-1;
+	p = len - 1;
 	/* strip trailing slashes */
-	while (p && rvbuf[p] == '/') rvbuf[p--] = 0;
+	while (p && rvbuf[p] == '/')
+		rvbuf[p--] = '\0';
 	/* strip trailing .git */
 	if (p >= 3 && starts_with(&rvbuf[p-3], ".git")) {
-		p -= 3; rvbuf[p--] = 0;
+		p -= 3;
+		rvbuf[p--] = '\0';
 	}
 	/* strip more trailing slashes if any */
-	while ( p && rvbuf[p] == '/') rvbuf[p--] = 0;
+	while (p && rvbuf[p] == '/')
+		rvbuf[p--] = '\0';
 	/* find last slash in the remaining string */
-	rv = strrchr(rvbuf,'/');
+	rv = strrchr(rvbuf, '/');
 	if (rv)
 		return ++rv;
 	return rvbuf;
+}
+
+const char *cgit_snapshot_prefix(const struct cgit_repo *repo)
+{
+	if (repo->snapshot_prefix)
+		return repo->snapshot_prefix;
+
+	return cgit_repobasename(repo->url);
 }
 
 static void site_url(const char *page, const char *search, const char *sort, int ofs, int always_root)
@@ -304,6 +351,12 @@ void cgit_plain_link(const char *name, const char *title, const char *class,
 	reporevlink("plain", name, title, class, head, rev, path);
 }
 
+void cgit_blame_link(const char *name, const char *title, const char *class,
+		     const char *head, const char *rev, const char *path)
+{
+	reporevlink("blame", name, title, class, head, rev, path);
+}
+
 void cgit_log_link(const char *name, const char *title, const char *class,
 		   const char *head, const char *rev, const char *path,
 		   int ofs, const char *grep, const char *pattern, int showmsg,
@@ -347,17 +400,10 @@ void cgit_log_link(const char *name, const char *title, const char *class,
 	html("</a>");
 }
 
-void cgit_commit_link(char *name, const char *title, const char *class,
+void cgit_commit_link(const char *name, const char *title, const char *class,
 		      const char *head, const char *rev, const char *path)
 {
 	char *delim;
-
-	if (strlen(name) > ctx.cfg.max_msg_len && ctx.cfg.max_msg_len >= 15) {
-		name[ctx.cfg.max_msg_len] = '\0';
-		name[ctx.cfg.max_msg_len - 1] = '.';
-		name[ctx.cfg.max_msg_len - 2] = '.';
-		name[ctx.cfg.max_msg_len - 3] = '.';
-	}
 
 	delim = repolink(title, class, "commit", head, path);
 	if (rev && ctx.qry.head && strcmp(rev, ctx.qry.head)) {
@@ -387,9 +433,13 @@ void cgit_commit_link(char *name, const char *title, const char *class,
 		html("follow=1");
 	}
 	html("'>");
-	if (name[0] != '\0')
-		html_txt(name);
-	else
+	if (name[0] != '\0') {
+		if (strlen(name) > ctx.cfg.max_msg_len && ctx.cfg.max_msg_len >= 15) {
+			html_ntxt(name, ctx.cfg.max_msg_len - 3);
+			html("...");
+		} else
+			html_txt(name);
+	} else
 		html_txt("(no commit message)");
 	html("</a>");
 }
@@ -481,6 +531,10 @@ static void cgit_self_link(char *name, const char *title, const char *class)
 		cgit_plain_link(name, title, class, ctx.qry.head,
 				ctx.qry.has_sha1 ? ctx.qry.sha1 : NULL,
 				ctx.qry.path);
+	else if (!strcmp(ctx.qry.page, "blame"))
+		cgit_blame_link(name, title, class, ctx.qry.head,
+				ctx.qry.has_sha1 ? ctx.qry.sha1 : NULL,
+				ctx.qry.path);
 	else if (!strcmp(ctx.qry.page, "log"))
 		cgit_log_link(name, title, class, ctx.qry.head,
 			      ctx.qry.has_sha1 ? ctx.qry.sha1 : NULL,
@@ -538,7 +592,7 @@ void cgit_object_link(struct object *obj)
 		page = "tag";
 	else
 		page = "blob";
-	name = fmt("%s %s...", typename(obj->type), shortrev);
+	name = fmt("%s %s...", type_name(obj->type), shortrev);
 	reporevlink(page, name, NULL, NULL, ctx.qry.head, fullrev, NULL);
 }
 
@@ -759,6 +813,8 @@ void cgit_print_docstart(void)
 		cgit_add_clone_urls(print_rel_vcs_link);
 	if (ctx.cfg.head_include)
 		html_include(ctx.cfg.head_include);
+	if (ctx.repo && ctx.repo->extra_head_content)
+		html(ctx.repo->extra_head_content);
 	html("</head>\n");
 	html("<body>\n");
 	if (ctx.cfg.header)
@@ -889,12 +945,13 @@ static void cgit_print_path_crumbs(char *path)
 {
 	char *old_path = ctx.qry.path;
 	char *p = path, *q, *end = path + strlen(path);
+	int levels = 0;
 
 	ctx.qry.path = NULL;
 	cgit_self_link("root", NULL, NULL);
 	ctx.qry.path = p = path;
 	while (p < end) {
-		if (!(q = strchr(p, '/')))
+		if (!(q = strchr(p, '/')) || levels > 15)
 			q = end;
 		*q = '\0';
 		html_txt("/");
@@ -902,6 +959,7 @@ static void cgit_print_path_crumbs(char *path)
 		if (q < end)
 			*q = '/';
 		p = q + 1;
+		++levels;
 	}
 	ctx.qry.path = old_path;
 }
@@ -961,8 +1019,6 @@ static void print_header(void)
 	} else {
 		if (ctx.cfg.root_desc)
 			html_txt(ctx.cfg.root_desc);
-		else if (ctx.cfg.index_info)
-			html_include(ctx.cfg.index_info);
 	}
 	html("</td></tr></table>\n");
 }
@@ -986,8 +1042,12 @@ void cgit_print_pageheader(void)
 		cgit_log_link("log", NULL, hc("log"), ctx.qry.head,
 			      NULL, ctx.qry.vpath, 0, NULL, NULL,
 			      ctx.qry.showmsg, ctx.qry.follow);
-		cgit_tree_link("tree", NULL, hc("tree"), ctx.qry.head,
-			       ctx.qry.sha1, ctx.qry.vpath);
+		if (ctx.qry.page && !strcmp(ctx.qry.page, "blame"))
+			cgit_blame_link("blame", NULL, hc("blame"), ctx.qry.head,
+				        ctx.qry.sha1, ctx.qry.vpath);
+		else
+			cgit_tree_link("tree", NULL, hc("tree"), ctx.qry.head,
+				       ctx.qry.sha1, ctx.qry.vpath);
 		cgit_commit_link("commit", NULL, hc("commit"),
 				 ctx.qry.head, ctx.qry.sha1, ctx.qry.vpath);
 		cgit_diff_link("diff", NULL, hc("diff"), ctx.qry.head,
@@ -1016,7 +1076,7 @@ void cgit_print_pageheader(void)
 		html_option("committer", "committer", ctx.qry.grep);
 		html_option("range", "range", ctx.qry.grep);
 		html("</select>\n");
-		html("<input class='txt' type='text' size='10' name='q' value='");
+		html("<input class='txt' type='search' size='10' name='q' value='");
 		html_attr(ctx.qry.search);
 		html("'/>\n");
 		html("<input type='submit' value='search'/>\n");
@@ -1031,7 +1091,7 @@ void cgit_print_pageheader(void)
 		html("<form method='get' action='");
 		html_attr(currenturl);
 		html("'>\n");
-		html("<input type='text' name='q' size='10' value='");
+		html("<input type='search' name='q' size='10' value='");
 		html_attr(ctx.qry.search);
 		html("'/>\n");
 		html("<input type='submit' value='search'/>\n");
@@ -1039,7 +1099,7 @@ void cgit_print_pageheader(void)
 		free(currenturl);
 	}
 	html("</td></tr></table>\n");
-	if (ctx.env.authenticated && ctx.qry.vpath) {
+	if (ctx.env.authenticated && ctx.repo && ctx.qry.vpath) {
 		html("<div class='path'>");
 		html("path: ");
 		cgit_print_path_crumbs(ctx.qry.vpath);
@@ -1091,23 +1151,60 @@ void cgit_compose_snapshot_prefix(struct strbuf *filename, const char *base,
 	strbuf_addf(filename, "%s-%s", base, ref);
 }
 
-void cgit_print_snapshot_links(const char *repo, const char *head,
-			       const char *hex, int snapshots)
+void cgit_print_snapshot_links(const struct cgit_repo *repo, const char *ref,
+			       const char *separator)
 {
-	const struct cgit_snapshot_format* f;
+	const struct cgit_snapshot_format *f;
 	struct strbuf filename = STRBUF_INIT;
+	const char *basename;
 	size_t prefixlen;
 
-	cgit_compose_snapshot_prefix(&filename, cgit_repobasename(repo), hex);
+	basename = cgit_snapshot_prefix(repo);
+	if (starts_with(ref, basename))
+		strbuf_addstr(&filename, ref);
+	else
+		cgit_compose_snapshot_prefix(&filename, basename, ref);
+
 	prefixlen = filename.len;
 	for (f = cgit_snapshot_formats; f->suffix; f++) {
-		if (!(snapshots & f->bit))
+		if (!(repo->snapshots & cgit_snapshot_format_bit(f)))
 			continue;
 		strbuf_setlen(&filename, prefixlen);
 		strbuf_addstr(&filename, f->suffix);
 		cgit_snapshot_link(filename.buf, NULL, NULL, NULL, NULL,
 				   filename.buf);
-		html("<br/>");
+		if (cgit_snapshot_get_sig(ref, f)) {
+			strbuf_addstr(&filename, ".asc");
+			html(" (");
+			cgit_snapshot_link("sig", NULL, NULL, NULL, NULL,
+					   filename.buf);
+			html(")");
+		} else if (starts_with(f->suffix, ".tar") && cgit_snapshot_get_sig(ref, &cgit_snapshot_formats[0])) {
+			strbuf_setlen(&filename, strlen(filename.buf) - strlen(f->suffix));
+			strbuf_addstr(&filename, ".tar.asc");
+			html(" (");
+			cgit_snapshot_link("sig", NULL, NULL, NULL, NULL,
+					   filename.buf);
+			html(")");
+		}
+		html(separator);
 	}
 	strbuf_release(&filename);
+}
+
+void cgit_set_title_from_path(const char *path)
+{
+	struct strbuf sb = STRBUF_INIT;
+	const char *slash, *last_slash;
+
+	if (!path)
+		return;
+
+	for (last_slash = path + strlen(path); (slash = memrchr(path, '/', last_slash - path)) != NULL; last_slash = slash) {
+		strbuf_add(&sb, slash + 1, last_slash - slash - 1);
+		strbuf_addstr(&sb, " \xc2\xab ");
+	}
+	strbuf_add(&sb, path, last_slash - path);
+	strbuf_addf(&sb, " - %s", ctx.page.title);
+	ctx.page.title = strbuf_detach(&sb, NULL);
 }

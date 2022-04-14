@@ -37,7 +37,7 @@ static int write_archive_type(const char *format, const char *hex, const char *p
 	/* argv_array guarantees a trailing NULL entry. */
 	memcpy(nargv, argv.argv, sizeof(char *) * (argv.argc + 1));
 
-	result = write_archive(argv.argc, nargv, NULL, 1, NULL, 0);
+	result = write_archive(argv.argc, nargv, NULL, the_repository, NULL, 0);
 	argv_array_clear(&argv);
 	free(nargv);
 	return result;
@@ -79,20 +79,60 @@ static int write_tar_bzip2_archive(const char *hex, const char *prefix)
 	return write_compressed_tar_archive(hex, prefix, argv);
 }
 
+static int write_tar_lzip_archive(const char *hex, const char *prefix)
+{
+	char *argv[] = { "lzip", NULL };
+	return write_compressed_tar_archive(hex, prefix, argv);
+}
+
 static int write_tar_xz_archive(const char *hex, const char *prefix)
 {
 	char *argv[] = { "xz", NULL };
 	return write_compressed_tar_archive(hex, prefix, argv);
 }
 
+static int write_tar_zstd_archive(const char *hex, const char *prefix)
+{
+	char *argv[] = { "zstd", "-T0", NULL };
+	return write_compressed_tar_archive(hex, prefix, argv);
+}
+
 const struct cgit_snapshot_format cgit_snapshot_formats[] = {
-	{ ".zip", "application/x-zip", write_zip_archive, 0x01 },
-	{ ".tar.gz", "application/x-gzip", write_tar_gzip_archive, 0x02 },
-	{ ".tar.bz2", "application/x-bzip2", write_tar_bzip2_archive, 0x04 },
-	{ ".tar", "application/x-tar", write_tar_archive, 0x08 },
-	{ ".tar.xz", "application/x-xz", write_tar_xz_archive, 0x10 },
+	/* .tar must remain the 0 index */
+	{ ".tar",	"application/x-tar",	write_tar_archive	},
+	{ ".tar.gz",	"application/x-gzip",	write_tar_gzip_archive	},
+	{ ".tar.bz2",	"application/x-bzip2",	write_tar_bzip2_archive	},
+	{ ".tar.lz",	"application/x-lzip",	write_tar_lzip_archive	},
+	{ ".tar.xz",	"application/x-xz",	write_tar_xz_archive	},
+	{ ".tar.zst",	"application/x-zstd",	write_tar_zstd_archive	},
+	{ ".zip",	"application/x-zip",	write_zip_archive	},
 	{ NULL }
 };
+
+static struct notes_tree snapshot_sig_notes[ARRAY_SIZE(cgit_snapshot_formats)];
+
+const struct object_id *cgit_snapshot_get_sig(const char *ref,
+					      const struct cgit_snapshot_format *f)
+{
+	struct notes_tree *tree;
+	struct object_id oid;
+
+	if (get_oid(ref, &oid))
+		return NULL;
+
+	tree = &snapshot_sig_notes[f - &cgit_snapshot_formats[0]];
+	if (!tree->initialized) {
+		struct strbuf notes_ref = STRBUF_INIT;
+
+		strbuf_addf(&notes_ref, "refs/notes/signatures/%s",
+			    f->suffix + 1);
+
+		init_notes(tree, notes_ref.buf, combine_notes_ignore, 0);
+		strbuf_release(&notes_ref);
+	}
+
+	return get_note(tree, &oid);
+}
 
 static const struct cgit_snapshot_format *get_format(const char *filename)
 {
@@ -103,6 +143,11 @@ static const struct cgit_snapshot_format *get_format(const char *filename)
 			return fmt;
 	}
 	return NULL;
+}
+
+const unsigned cgit_snapshot_format_bit(const struct cgit_snapshot_format *f)
+{
+	return BIT(f - &cgit_snapshot_formats[0]);
 }
 
 static int make_snapshot(const struct cgit_snapshot_format *format,
@@ -116,7 +161,7 @@ static int make_snapshot(const struct cgit_snapshot_format *format,
 				"Bad object id: %s", hex);
 		return 1;
 	}
-	if (!lookup_commit_reference(oid.hash)) {
+	if (!lookup_commit_reference(the_repository, &oid)) {
 		cgit_print_error_page(400, "Bad request",
 				"Not a commit reference: %s", hex);
 		return 1;
@@ -125,7 +170,41 @@ static int make_snapshot(const struct cgit_snapshot_format *format,
 	ctx.page.mimetype = xstrdup(format->mimetype);
 	ctx.page.filename = xstrdup(filename);
 	cgit_print_http_headers();
+	init_archivers();
 	format->write_func(hex, prefix);
+	return 0;
+}
+
+static int write_sig(const struct cgit_snapshot_format *format,
+		     const char *hex, const char *archive,
+		     const char *filename)
+{
+	const struct object_id *note = cgit_snapshot_get_sig(hex, format);
+	enum object_type type;
+	unsigned long size;
+	char *buf;
+
+	if (!note) {
+		cgit_print_error_page(404, "Not found",
+				"No signature for %s", archive);
+		return 0;
+	}
+
+	buf = read_object_file(note, &type, &size);
+	if (!buf) {
+		cgit_print_error_page(404, "Not found", "Not found");
+		return 0;
+	}
+
+	html("X-Content-Type-Options: nosniff\n");
+	html("Content-Security-Policy: default-src 'none'\n");
+	ctx.page.etag = oid_to_hex(note);
+	ctx.page.mimetype = xstrdup("application/pgp-signature");
+	ctx.page.filename = xstrdup(filename);
+	cgit_print_http_headers();
+
+	html_raw(buf, size);
+	free(buf);
 	return 0;
 }
 
@@ -139,7 +218,8 @@ static int make_snapshot(const struct cgit_snapshot_format *format,
  * pending a 'v' or a 'V' to the remaining snapshot name ("0.7.2" ->
  * "v0.7.2") gives us something valid.
  */
-static const char *get_ref_from_filename(const char *url, const char *filename,
+static const char *get_ref_from_filename(const struct cgit_repo *repo,
+					 const char *filename,
 					 const struct cgit_snapshot_format *format)
 {
 	const char *reponame;
@@ -153,7 +233,7 @@ static const char *get_ref_from_filename(const char *url, const char *filename,
 	if (get_oid(snapshot.buf, &oid) == 0)
 		goto out;
 
-	reponame = cgit_repobasename(url);
+	reponame = cgit_snapshot_prefix(repo);
 	if (starts_with(snapshot.buf, reponame)) {
 		const char *new_start = snapshot.buf;
 		new_start += strlen(reponame);
@@ -184,6 +264,8 @@ void cgit_print_snapshot(const char *head, const char *hex,
 			 const char *filename, int dwim)
 {
 	const struct cgit_snapshot_format* f;
+	const char *sig_filename = NULL;
+	char *adj_filename = NULL;
 	char *prefix = NULL;
 
 	if (!filename) {
@@ -192,15 +274,24 @@ void cgit_print_snapshot(const char *head, const char *hex,
 		return;
 	}
 
+	if (ends_with(filename, ".asc")) {
+		sig_filename = filename;
+
+		/* Strip ".asc" from filename for common format processing */
+		adj_filename = xstrdup(filename);
+		adj_filename[strlen(adj_filename) - 4] = '\0';
+		filename = adj_filename;
+	}
+
 	f = get_format(filename);
-	if (!f) {
+	if (!f || (!sig_filename && !(ctx.repo->snapshots & cgit_snapshot_format_bit(f)))) {
 		cgit_print_error_page(400, "Bad request",
 				"Unsupported snapshot format: %s", filename);
 		return;
 	}
 
 	if (!hex && dwim) {
-		hex = get_ref_from_filename(ctx.repo->url, filename, f);
+		hex = get_ref_from_filename(ctx.repo, filename, f);
 		if (hex == NULL) {
 			cgit_print_error_page(404, "Not found", "Not found");
 			return;
@@ -213,8 +304,13 @@ void cgit_print_snapshot(const char *head, const char *hex,
 		hex = head;
 
 	if (!prefix)
-		prefix = xstrdup(cgit_repobasename(ctx.repo->url));
+		prefix = xstrdup(cgit_snapshot_prefix(ctx.repo));
 
-	make_snapshot(f, hex, prefix, filename);
+	if (sig_filename)
+		write_sig(f, hex, filename, sig_filename);
+	else
+		make_snapshot(f, hex, prefix, filename);
+
 	free(prefix);
+	free(adj_filename);
 }

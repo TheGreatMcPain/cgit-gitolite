@@ -53,10 +53,12 @@ struct cgit_repo *cgit_add_repo(const char *url)
 	ret->name = ret->url;
 	ret->path = NULL;
 	ret->desc = cgit_default_repo_desc;
+	ret->extra_head_content = NULL;
 	ret->owner = NULL;
 	ret->homepage = NULL;
 	ret->section = ctx.cfg.section;
 	ret->snapshots = ctx.cfg.snapshots;
+	ret->enable_blame = ctx.cfg.enable_blame;
 	ret->enable_commit_graph = ctx.cfg.enable_commit_graph;
 	ret->enable_log_filecount = ctx.cfg.enable_log_filecount;
 	ret->enable_log_linecount = ctx.cfg.enable_log_linecount;
@@ -160,7 +162,7 @@ static struct refinfo *cgit_mk_refinfo(const char *refname, const struct object_
 
 	ref = xmalloc(sizeof (struct refinfo));
 	ref->refname = xstrdup(refname);
-	ref->object = parse_object(oid->hash);
+	ref->object = parse_object(the_repository, oid);
 	switch (ref->object->type) {
 	case OBJ_TAG:
 		ref->tag = cgit_parse_tag((struct tag *)ref->object);
@@ -239,7 +241,7 @@ static int load_mmfile(mmfile_t *file, const struct object_id *oid)
 		file->ptr = (char *)"";
 		file->size = 0;
 	} else {
-		file->ptr = read_sha1_file(oid->hash, &type,
+		file->ptr = read_object_file(oid, &type,
 		                           (unsigned long *)&file->size);
 	}
 	return 1;
@@ -324,7 +326,7 @@ int cgit_diff_files(const struct object_id *old_oid,
 		diff_params.flags |= XDF_IGNORE_WHITESPACE;
 	emit_params.ctxlen = context > 0 ? context : 3;
 	emit_params.flags = XDL_EMIT_FUNCNAMES;
-	emit_cb.outf = filediff_cb;
+	emit_cb.out_line = filediff_cb;
 	emit_cb.priv = fn;
 	xdl_diff(&file1, &file2, &diff_params, &emit_params, &emit_cb);
 	if (file1.size)
@@ -346,13 +348,13 @@ void cgit_diff_tree(const struct object_id *old_oid,
 	opt.output_format = DIFF_FORMAT_CALLBACK;
 	opt.detect_rename = 1;
 	opt.rename_limit = ctx.cfg.renamelimit;
-	DIFF_OPT_SET(&opt, RECURSIVE);
+	opt.flags.recursive = 1;
 	if (ignorews)
 		DIFF_XDL_SET(&opt, IGNORE_WHITESPACE);
 	opt.format_callback = cgit_diff_tree_cb;
 	opt.format_callback_data = fn;
 	if (prefix) {
-		item.match = prefix;
+		item.match = xstrdup(prefix);
 		item.len = strlen(prefix);
 		opt.pathspec.nr = 1;
 		opt.pathspec.items = &item;
@@ -360,11 +362,13 @@ void cgit_diff_tree(const struct object_id *old_oid,
 	diff_setup_done(&opt);
 
 	if (old_oid && !is_null_oid(old_oid))
-		diff_tree_sha1(old_oid->hash, new_oid->hash, "", &opt);
+		diff_tree_oid(old_oid, new_oid, "", &opt);
 	else
-		diff_root_tree_sha1(new_oid->hash, "", &opt);
+		diff_root_tree_oid(new_oid, "", &opt);
 	diffcore_std(&opt);
 	diff_flush(&opt);
+
+	free(item.match);
 }
 
 void cgit_diff_commit(struct commit *commit, filepair_fn fn, const char *prefix)
@@ -388,6 +392,9 @@ int cgit_parse_snapshots_mask(const char *str)
 	if (atoi(str))
 		return 1;
 
+	if (strcmp(str, "all") == 0)
+		return INT_MAX;
+
 	string_list_split(&tokens, str, ' ', -1);
 	string_list_remove_empty_items(&tokens, 0);
 
@@ -395,7 +402,7 @@ int cgit_parse_snapshots_mask(const char *str)
 		for (f = cgit_snapshot_formats; f->suffix; f++) {
 			if (!strcmp(item->string, f->suffix) ||
 			    !strcmp(item->string, f->suffix + 1)) {
-				rv |= f->bit;
+				rv |= cgit_snapshot_format_bit(f);
 				break;
 			}
 		}
@@ -470,15 +477,16 @@ static int is_token_char(char c)
 static char *expand_macro(char *name, int maxlength)
 {
 	char *value;
-	int len;
+	size_t len;
 
 	len = 0;
 	value = getenv(name);
 	if (value) {
-		len = strlen(value);
+		len = strlen(value) + 1;
 		if (len > maxlength)
 			len = maxlength;
-		strncpy(name, value, len);
+		strlcpy(name, value, len);
+		--len;
 	}
 	return name + len;
 }

@@ -31,7 +31,7 @@ void cgit_print_commit(char *hex, const char *prefix)
 				"Bad object id: %s", hex);
 		return;
 	}
-	commit = lookup_commit_reference(oid.hash);
+	commit = lookup_commit_reference(the_repository, &oid);
 	if (!commit) {
 		cgit_print_error_page(404, "Not found",
 				"Bad commit reference: %s", hex);
@@ -39,9 +39,9 @@ void cgit_print_commit(char *hex, const char *prefix)
 	}
 	info = cgit_parse_commit(commit);
 
-	format_display_notes(oid.hash, &notes, PAGE_ENCODING, 0);
+	format_display_notes(&oid, &notes, PAGE_ENCODING, 0);
 
-	load_ref_decorations(DECORATE_FULL_REFS);
+	load_ref_decorations(NULL, DECORATE_FULL_REFS);
 
 	cgit_print_layout_start();
 	cgit_print_diff_ctrls();
@@ -78,7 +78,7 @@ void cgit_print_commit(char *hex, const char *prefix)
 	html(")</td></tr>\n");
 	html("<tr><th>tree</th><td colspan='2' class='sha1'>");
 	tmp = xstrdup(hex);
-	cgit_tree_link(oid_to_hex(&commit->tree->object.oid), NULL, NULL,
+	cgit_tree_link(oid_to_hex(get_commit_tree_oid(commit)), NULL, NULL,
 		       ctx.qry.head, tmp, NULL);
 	if (prefix) {
 		html(" /");
@@ -87,7 +87,7 @@ void cgit_print_commit(char *hex, const char *prefix)
 	free(tmp);
 	html("</td></tr>\n");
 	for (p = commit->parents; p; p = p->next) {
-		parent = lookup_commit_reference(p->item->object.oid.hash);
+		parent = lookup_commit_reference(the_repository, &p->item->object.oid);
 		if (!parent) {
 			html("<tr><td colspan='3'>");
 			cgit_print_error("Error reading parent commit");
@@ -110,8 +110,7 @@ void cgit_print_commit(char *hex, const char *prefix)
 	}
 	if (ctx.repo->snapshots) {
 		html("<tr><th>download</th><td colspan='2' class='sha1'>");
-		cgit_print_snapshot_links(ctx.qry.repo, ctx.qry.head,
-					  hex, ctx.repo->snapshots);
+		cgit_print_snapshot_links(ctx.repo, hex, "<br/>");
 		html("</td></tr>");
 	}
 	html("</table>\n");

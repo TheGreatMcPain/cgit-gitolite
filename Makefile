@@ -2,7 +2,7 @@ all::
 
 CGIT_GITOLITE_VERSION = v0.2.0
 
-CGIT_VERSION = v1.1
+CGIT_VERSION = v1.2.3
 CGIT_SCRIPT_NAME = cgit.cgi
 CGIT_SCRIPT_PATH = /var/www/htdocs/cgit
 CGIT_DATA_PATH = $(CGIT_SCRIPT_PATH)
@@ -16,8 +16,8 @@ htmldir = $(docdir)
 pdfdir = $(docdir)
 mandir = $(prefix)/share/man
 SHA1_HEADER = <openssl/sha.h>
-GIT_VER = 2.10.2
-GIT_URL = https://www.kernel.org/pub/software/scm/git/git-$(GIT_VER).tar.gz
+GIT_VER = 2.25.1
+GIT_URL = https://www.kernel.org/pub/software/scm/git/git-$(GIT_VER).tar.xz
 INSTALL = install
 COPYTREE = cp -r
 MAN5_TXT = $(wildcard *.5.txt)
@@ -25,6 +25,12 @@ MAN_TXT  = $(MAN5_TXT)
 DOC_MAN5 = $(patsubst %.txt,%,$(MAN5_TXT))
 DOC_HTML = $(patsubst %.txt,%.html,$(MAN_TXT))
 DOC_PDF  = $(patsubst %.txt,%.pdf,$(MAN_TXT))
+
+ASCIIDOC = asciidoc
+ASCIIDOC_EXTRA =
+ASCIIDOC_HTML = xhtml11
+ASCIIDOC_COMMON = $(ASCIIDOC) $(ASCIIDOC_EXTRA)
+TXT_TO_HTML = $(ASCIIDOC_COMMON) -b $(ASCIIDOC_HTML)
 
 # Define NO_C99_FORMAT if your formatted IO functions (printf/scanf et.al.)
 # do not support the 'size specifiers' introduced by C99, namely ll, hh,
@@ -136,7 +142,8 @@ doc-pdf: $(DOC_PDF)
 	a2x -f manpage $<
 
 $(DOC_HTML): %.html : %.txt
-	a2x -f xhtml --stylesheet=cgit-doc.css $<
+	$(TXT_TO_HTML) -o $@+ $< && \
+	mv $@+ $@
 
 $(DOC_PDF): %.pdf : %.txt
 	a2x -f pdf cgitrc.5.txt
@@ -152,7 +159,7 @@ clean-doc:
 	$(RM) cgitrc.5 cgitrc.5.html cgitrc.5.pdf cgitrc.5.xml cgitrc.5.fo
 
 get-git:
-	curl -L $(GIT_URL) | tar -xzf - && rm -rf git && mv git-$(GIT_VER) git
+	curl -L $(GIT_URL) | tar -xJf - && rm -rf git && mv git-$(GIT_VER) git
 
 tags:
 	$(QUIET_TAGS)find . -name '*.[ch]' | xargs ctags

@@ -20,11 +20,21 @@
 const char *cgit_gitolite_version = CGIT_GITOLITE_VERSION;
 const char *cgit_version = CGIT_VERSION;
 
+__attribute__((constructor))
+static void constructor_environment()
+{
+	/* Do not look in /etc/ for gitconfig and gitattributes. */
+	setenv("GIT_CONFIG_NOSYSTEM", "1", 1);
+	setenv("GIT_ATTR_NOSYSTEM", "1", 1);
+	unsetenv("HOME");
+	unsetenv("XDG_CONFIG_HOME");
+}
+
 static void add_mimetype(const char *name, const char *value)
 {
 	struct string_list_item *item;
 
-	item = string_list_insert(&ctx.cfg.mimetypes, xstrdup(name));
+	item = string_list_insert(&ctx.cfg.mimetypes, name);
 	item->util = xstrdup(value);
 }
 
@@ -47,8 +57,12 @@ static void repo_config(struct cgit_repo *repo, const char *name, const char *va
 		repo->homepage = xstrdup(value);
 	else if (!strcmp(name, "defbranch"))
 		repo->defbranch = xstrdup(value);
+	else if (!strcmp(name, "extra-head-content"))
+		repo->extra_head_content = xstrdup(value);
 	else if (!strcmp(name, "snapshots"))
 		repo->snapshots = ctx.cfg.snapshots & cgit_parse_snapshots_mask(value);
+	else if (!strcmp(name, "enable-blame"))
+		repo->enable_blame = atoi(value);
 	else if (!strcmp(name, "enable-commit-graph"))
 		repo->enable_commit_graph = atoi(value);
 	else if (!strcmp(name, "enable-log-filecount"))
@@ -80,6 +94,8 @@ static void repo_config(struct cgit_repo *repo, const char *name, const char *va
 		item->util = xstrdup(value);
 	} else if (!strcmp(name, "section"))
 		repo->section = xstrdup(value);
+	else if (!strcmp(name, "snapshot-prefix"))
+		repo->snapshot_prefix = xstrdup(value);
 	else if (!strcmp(name, "readme") && value != NULL) {
 		if (repo->readme.items == ctx.cfg.readme.items)
 			memset(&repo->readme, 0, sizeof(repo->readme));
@@ -110,7 +126,7 @@ static void config_cb(const char *name, const char *value)
 {
 	const char *arg;
 
-	if (!strcmp(name, "section") || !strcmp(name, "repo.group"))
+	if (!strcmp(name, "section"))
 		ctx.cfg.section = xstrdup(value);
 	else if (!strcmp(name, "repo.url"))
 		ctx.repo = cgit_add_repo(value);
@@ -138,20 +154,14 @@ static void config_cb(const char *name, const char *value)
 		ctx.cfg.header = xstrdup(value);
 	else if (!strcmp(name, "logo"))
 		ctx.cfg.logo = xstrdup(value);
-	else if (!strcmp(name, "index-header"))
-		ctx.cfg.index_header = xstrdup(value);
-	else if (!strcmp(name, "index-info"))
-		ctx.cfg.index_info = xstrdup(value);
 	else if (!strcmp(name, "logo-link"))
 		ctx.cfg.logo_link = xstrdup(value);
 	else if (!strcmp(name, "module-link"))
 		ctx.cfg.module_link = xstrdup(value);
 	else if (!strcmp(name, "strict-export"))
 		ctx.cfg.strict_export = xstrdup(value);
-	else if (!strcmp(name, "virtual-root")) {
+	else if (!strcmp(name, "virtual-root"))
 		ctx.cfg.virtual_root = ensure_end(value, '/');
-	} else if (!strcmp(name, "nocache"))
-		ctx.cfg.nocache = atoi(value);
 	else if (!strcmp(name, "noplainemail"))
 		ctx.cfg.noplainemail = atoi(value);
 	else if (!strcmp(name, "noheader"))
@@ -168,6 +178,8 @@ static void config_cb(const char *name, const char *value)
 		ctx.cfg.enable_index_links = atoi(value);
 	else if (!strcmp(name, "enable-index-owner"))
 		ctx.cfg.enable_index_owner = atoi(value);
+	else if (!strcmp(name, "enable-blame"))
+		ctx.cfg.enable_blame = atoi(value);
 	else if (!strcmp(name, "enable-commit-graph"))
 		ctx.cfg.enable_commit_graph = atoi(value);
 	else if (!strcmp(name, "enable-log-filecount"))
@@ -235,7 +247,7 @@ static void config_cb(const char *name, const char *value)
 	else if (!strcmp(name, "project-list"))
 		ctx.cfg.project_list = xstrdup(expand_macros(value));
 	else if (!strcmp(name, "scan-path"))
-		if (!ctx.cfg.nocache && ctx.cfg.cache_size)
+		if (ctx.cfg.cache_size)
 			process_cached_repolist(expand_macros(value));
 		else
 			scan_tree(expand_macros(value), repo_config);
@@ -351,7 +363,6 @@ static void prepare_context(void)
 {
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.cfg.agefile = "info/web/last-modified";
-	ctx.cfg.nocache = 0;
 	ctx.cfg.cache_size = 0;
 	ctx.cfg.cache_max_create_time = 5;
 	ctx.cfg.cache_root = CGIT_CACHE_ROOT;
@@ -418,7 +429,7 @@ static void prepare_context(void)
 	ctx.page.modified = time(NULL);
 	ctx.page.expires = ctx.page.modified;
 	ctx.page.etag = NULL;
-	memset(&ctx.cfg.mimetypes, 0, sizeof(struct string_list));
+	string_list_init(&ctx.cfg.mimetypes, 1);
 	if (ctx.env.script_name)
 		ctx.cfg.script_name = xstrdup(ctx.env.script_name);
 	if (ctx.env.query_string)
@@ -477,7 +488,7 @@ static char *guess_defbranch(void)
 	const char *ref, *refname;
 	struct object_id oid;
 
-	ref = resolve_ref_unsafe("HEAD", 0, oid.hash, NULL);
+	ref = resolve_ref_unsafe("HEAD", 0, &oid, NULL);
 	if (!ref || !skip_prefix(ref, "refs/heads/", &refname))
 		return "master";
 	return xstrdup(refname);
@@ -560,26 +571,22 @@ static void print_no_repo_clone_urls(const char *url)
         html("</a></td></tr>\n");
 }
 
-static int prepare_repo_cmd(void)
+static void prepare_repo_env(int *nongit)
 {
-	struct object_id oid;
-	int nongit = 0;
-	int rc;
-
 	/* The path to the git repository. */
 	setenv("GIT_DIR", ctx.repo->path, 1);
-
-	/* Do not look in /etc/ for gitconfig and gitattributes. */
-	setenv("GIT_CONFIG_NOSYSTEM", "1", 1);
-	setenv("GIT_ATTR_NOSYSTEM", "1", 1);
-	unsetenv("HOME");
-	unsetenv("XDG_CONFIG_HOME");
 
 	/* Setup the git directory and initialize the notes system. Both of these
 	 * load local configuration from the git repository, so we do them both while
 	 * the HOME variables are unset. */
-	setup_git_directory_gently(&nongit);
-	init_display_notes(NULL);
+	setup_git_directory_gently(nongit);
+	load_display_notes(NULL);
+}
+
+static int prepare_repo_cmd(int nongit)
+{
+	struct object_id oid;
+	int rc;
 
 	if (nongit) {
 		const char *name = ctx.repo->name;
@@ -646,7 +653,7 @@ static inline void open_auth_filter(const char *function)
 		ctx.env.https ? ctx.env.https : "",
 		ctx.qry.repo ? ctx.qry.repo : "",
 		ctx.qry.page ? ctx.qry.page : "",
-		ctx.qry.url ? ctx.qry.url : "",
+		cgit_currentfullurl(),
 		cgit_loginurl());
 }
 
@@ -660,13 +667,13 @@ static inline void open_auth_filter(const char *function)
 static inline void authenticate_post(void)
 {
 	char buffer[MAX_AUTHENTICATION_POST_BYTES];
-	unsigned int len;
+	ssize_t len;
 
 	open_auth_filter("authenticate-post");
 	len = ctx.env.content_length;
 	if (len > MAX_AUTHENTICATION_POST_BYTES)
 		len = MAX_AUTHENTICATION_POST_BYTES;
-	if (read(STDIN_FILENO, buffer, len) < 0)
+	if ((len = read(STDIN_FILENO, buffer, len)) < 0)
 		die_errno("Could not read POST from stdin");
 	if (write(STDOUT_FILENO, buffer, len) < 0)
 		die_errno("Could not write POST to stdout");
@@ -699,6 +706,7 @@ static inline void authenticate_cookie(void)
 static void process_request(void)
 {
 	struct cgit_cmd *cmd;
+	int nongit = 0;
 
 	/* If we're not yet authenticated, no matter what page we're on,
 	 * display the authentication body from the auth_filter. This should
@@ -714,6 +722,9 @@ static void process_request(void)
 		return;
 	}
 
+	if (ctx.repo)
+		prepare_repo_env(&nongit);
+
 	cmd = cgit_get_cmd();
 	if (!cmd) {
 		ctx.page.title = "cgit error";
@@ -727,19 +738,19 @@ static void process_request(void)
 		return;
 	}
 
-	/* If cmd->want_vpath is set, assume ctx.qry.path contains a "virtual"
-	 * in-project path limit to be made available at ctx.qry.vpath.
-	 * Otherwise, no path limit is in effect (ctx.qry.vpath = NULL).
-	 */
-	ctx.qry.vpath = cmd->want_vpath ? ctx.qry.path : NULL;
-
 	if (cmd->want_repo && !ctx.repo) {
 		cgit_print_error_page(400, "Bad request",
 				"No repository selected");
 		return;
 	}
 
-	if (ctx.repo && prepare_repo_cmd())
+	/* If cmd->want_vpath is set, assume ctx.qry.path contains a "virtual"
+	 * in-project path limit to be made available at ctx.qry.vpath.
+	 * Otherwise, no path limit is in effect (ctx.qry.vpath = NULL).
+	 */
+	ctx.qry.vpath = cmd->want_vpath ? ctx.qry.path : NULL;
+
+	if (ctx.repo && prepare_repo_cmd(nongit))
 		return;
 
 	cmd->fn();
@@ -757,7 +768,7 @@ static char *build_snapshot_setting(int bitmap)
 	struct strbuf result = STRBUF_INIT;
 
 	for (f = cgit_snapshot_formats; f->suffix; f++) {
-		if (f->bit & bitmap) {
+		if (cgit_snapshot_format_bit(f) & bitmap) {
 			if (result.len)
 				strbuf_addch(&result, ' ');
 			strbuf_addstr(&result, f->suffix);
@@ -796,6 +807,8 @@ static void print_repo(FILE *f, struct cgit_repo *repo)
 	}
 	if (repo->defbranch)
 		fprintf(f, "repo.defbranch=%s\n", repo->defbranch);
+	if (repo->extra_head_content)
+		fprintf(f, "repo.extra-head-content=%s\n", repo->extra_head_content);
 	if (repo->module_link)
 		fprintf(f, "repo.module-link=%s\n", repo->module_link);
 	if (repo->section)
@@ -804,6 +817,8 @@ static void print_repo(FILE *f, struct cgit_repo *repo)
 		fprintf(f, "repo.homepage=%s\n", repo->homepage);
 	if (repo->clone_url)
 		fprintf(f, "repo.clone-url=%s\n", repo->clone_url);
+	fprintf(f, "repo.enable-blame=%d\n",
+	        repo->enable_blame);
 	fprintf(f, "repo.enable-commit-graph=%d\n",
 	        repo->enable_commit_graph);
 	fprintf(f, "repo.enable-log-filecount=%d\n",
@@ -825,6 +840,8 @@ static void print_repo(FILE *f, struct cgit_repo *repo)
 		fprintf(f, "repo.snapshots=%s\n", tmp ? tmp : "");
 		free(tmp);
 	}
+	if (repo->snapshot_prefix)
+		fprintf(f, "repo.snapshot-prefix=%s\n", repo->snapshot_prefix);
 	if (repo->max_stats != ctx.cfg.max_stats)
 		fprintf(f, "repo.max-stats=%s\n",
 		        cgit_find_stats_periodname(repo->max_stats));
@@ -962,8 +979,6 @@ static void cgit_parse_args(int argc, const char **argv)
 		}
 		if (skip_prefix(argv[i], "--cache=", &arg)) {
 			ctx.cfg.cache_root = xstrdup(arg);
-		} else if (!strcmp(argv[i], "--nocache")) {
-			ctx.cfg.nocache = 1;
 		} else if (!strcmp(argv[i], "--nohttp")) {
 			ctx.env.no_http = "1";
 		} else if (skip_prefix(argv[i], "--query=", &arg)) {
@@ -1084,8 +1099,6 @@ int cmd_main(int argc, const char **argv)
 	else
 		ctx.page.expires += ttl * 60;
 	if (!ctx.env.authenticated || (ctx.env.request_method && !strcmp(ctx.env.request_method, "HEAD")))
-		ctx.cfg.nocache = 1;
-	if (ctx.cfg.nocache)
 		ctx.cfg.cache_size = 0;
 	err = cache_process(ctx.cfg.cache_size, ctx.cfg.cache_root,
 			    ctx.qry.raw, ttl, process_request);

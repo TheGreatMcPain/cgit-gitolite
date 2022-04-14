@@ -82,7 +82,7 @@ static void print_fileinfo(struct fileinfo *info)
 	}
 
 	html("<tr>");
-	htmlf("<td class='mode'>");
+	html("<td class='mode'>");
 	if (is_null_oid(info->new_oid)) {
 		cgit_print_filemode(info->old_mode);
 	} else {
@@ -258,8 +258,8 @@ static void header(const struct object_id *oid1, char *path1, int mode1,
 		htmlf("<br/>deleted file mode %.6o", mode1);
 
 	if (!subproject) {
-		abbrev1 = xstrdup(find_unique_abbrev(oid1->hash, DEFAULT_ABBREV));
-		abbrev2 = xstrdup(find_unique_abbrev(oid2->hash, DEFAULT_ABBREV));
+		abbrev1 = xstrdup(find_unique_abbrev(oid1, DEFAULT_ABBREV));
+		abbrev2 = xstrdup(find_unique_abbrev(oid2, DEFAULT_ABBREV));
 		htmlf("<br/>index %s..%s", abbrev1, abbrev2);
 		free(abbrev1);
 		free(abbrev2);
@@ -385,7 +385,7 @@ void cgit_print_diff(const char *new_rev, const char *old_rev,
 		     const char *prefix, int show_ctrls, int raw)
 {
 	struct commit *commit, *commit2;
-	const unsigned char *old_tree_sha1, *new_tree_sha1;
+	const struct object_id *old_tree_oid, *new_tree_oid;
 	diff_type difftype;
 
 	/*
@@ -407,13 +407,13 @@ void cgit_print_diff(const char *new_rev, const char *old_rev,
 			"Bad object name: %s", new_rev);
 		return;
 	}
-	commit = lookup_commit_reference(new_rev_oid->hash);
+	commit = lookup_commit_reference(the_repository, new_rev_oid);
 	if (!commit || parse_commit(commit)) {
 		cgit_print_error_page(404, "Not found",
 			"Bad commit: %s", oid_to_hex(new_rev_oid));
 		return;
 	}
-	new_tree_sha1 = commit->tree->object.oid.hash;
+	new_tree_oid = get_commit_tree_oid(commit);
 
 	if (old_rev) {
 		if (get_oid(old_rev, old_rev_oid)) {
@@ -428,15 +428,15 @@ void cgit_print_diff(const char *new_rev, const char *old_rev,
 	}
 
 	if (!is_null_oid(old_rev_oid)) {
-		commit2 = lookup_commit_reference(old_rev_oid->hash);
+		commit2 = lookup_commit_reference(the_repository, old_rev_oid);
 		if (!commit2 || parse_commit(commit2)) {
 			cgit_print_error_page(404, "Not found",
 				"Bad commit: %s", oid_to_hex(old_rev_oid));
 			return;
 		}
-		old_tree_sha1 = commit2->tree->object.oid.hash;
+		old_tree_oid = get_commit_tree_oid(commit2);
 	} else {
-		old_tree_sha1 = NULL;
+		old_tree_oid = NULL;
 	}
 
 	if (raw) {
@@ -444,16 +444,16 @@ void cgit_print_diff(const char *new_rev, const char *old_rev,
 
 		diff_setup(&diffopt);
 		diffopt.output_format = DIFF_FORMAT_PATCH;
-		DIFF_OPT_SET(&diffopt, RECURSIVE);
+		diffopt.flags.recursive = 1;
 		diff_setup_done(&diffopt);
 
 		ctx.page.mimetype = "text/plain";
 		cgit_print_http_headers();
-		if (old_tree_sha1) {
-			diff_tree_sha1(old_tree_sha1, new_tree_sha1, "",
+		if (old_tree_oid) {
+			diff_tree_oid(old_tree_oid, new_tree_oid, "",
 				       &diffopt);
 		} else {
-			diff_root_tree_sha1(new_tree_sha1, "", &diffopt);
+			diff_root_tree_oid(new_tree_oid, "", &diffopt);
 		}
 		diffcore_std(&diffopt);
 		diff_flush(&diffopt);

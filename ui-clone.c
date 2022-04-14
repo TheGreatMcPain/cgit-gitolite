@@ -11,18 +11,20 @@
 #include "ui-clone.h"
 #include "html.h"
 #include "ui-shared.h"
+#include "packfile.h"
+#include "object-store.h"
 
 static int print_ref_info(const char *refname, const struct object_id *oid,
                           int flags, void *cb_data)
 {
 	struct object *obj;
 
-	if (!(obj = parse_object(oid->hash)))
+	if (!(obj = parse_object(the_repository, oid)))
 		return 0;
 
 	htmlf("%s\t%s\n", oid_to_hex(oid), refname);
 	if (obj->type == OBJ_TAG) {
-		if (!(obj = deref_tag(obj, refname, 0)))
+		if (!(obj = deref_tag(the_repository, obj, refname, 0)))
 			return 0;
 		htmlf("%s\t%s^{}\n", oid_to_hex(&obj->oid), refname);
 	}
@@ -37,8 +39,8 @@ static void print_pack_info(void)
 	ctx.page.mimetype = "text/plain";
 	ctx.page.filename = "objects/info/packs";
 	cgit_print_http_headers();
-	prepare_packed_git();
-	for (pack = packed_git; pack; pack = pack->next) {
+	reprepare_packed_git(the_repository);
+	for (pack = get_packed_git(the_repository); pack; pack = pack->next) {
 		if (pack->pack_local) {
 			offset = strrchr(pack->pack_name, '/');
 			if (offset && offset[1] != '\0')
@@ -90,17 +92,32 @@ void cgit_clone_info(void)
 
 void cgit_clone_objects(void)
 {
-	if (!ctx.qry.path) {
-		cgit_print_error_page(400, "Bad request", "Bad request");
-		return;
-	}
+	char *p;
+
+	if (!ctx.qry.path)
+		goto err;
 
 	if (!strcmp(ctx.qry.path, "info/packs")) {
 		print_pack_info();
 		return;
 	}
 
+	/* Avoid directory traversal by forbidding "..", but also work around
+	 * other funny business by just specifying a fairly strict format. For
+	 * example, now we don't have to stress out about the Cygwin port.
+	 */
+	for (p = ctx.qry.path; *p; ++p) {
+		if (*p == '.' && *(p + 1) == '.')
+			goto err;
+		if (!isalnum(*p) && *p != '/' && *p != '.' && *p != '-')
+			goto err;
+	}
+
 	send_file(git_path("objects/%s", ctx.qry.path));
+	return;
+
+err:
+	cgit_print_error_page(400, "Bad request", "Bad request");
 }
 
 void cgit_clone_head(void)

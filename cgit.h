@@ -8,6 +8,7 @@
 #include <cache.h>
 #include <grep.h>
 #include <object.h>
+#include <object-store.h>
 #include <tree.h>
 #include <commit.h>
 #include <tag.h>
@@ -46,6 +47,8 @@
  */
 #define PAGE_ENCODING "UTF-8"
 
+#define BIT(x)	(1U << (x))
+
 typedef void (*configfn)(const char *name, const char *value);
 typedef void (*filepair_fn)(struct diff_filepair *pair);
 typedef void (*linediff_fn)(char *line, int len);
@@ -71,7 +74,6 @@ struct cgit_exec_filter {
 	char *cmd;
 	char **argv;
 	int old_stdout;
-	int pipe_fh[2];
 	int pid;
 };
 
@@ -80,6 +82,7 @@ struct cgit_repo {
 	char *name;
 	char *path;
 	char *desc;
+	char *extra_head_content;
 	char *owner;
 	char *homepage;
 	char *defbranch;
@@ -89,7 +92,9 @@ struct cgit_repo {
 	char *clone_url;
 	char *logo;
 	char *logo_link;
+	char *snapshot_prefix;
 	int snapshots;
+	int enable_blame;
 	int enable_commit_graph;
 	int enable_log_filecount;
 	int enable_log_linecount;
@@ -195,8 +200,6 @@ struct cgit_config {
 	char *footer;
 	char *head_include;
 	char *header;
-	char *index_header;
-	char *index_info;
 	char *logo;
 	char *logo_link;
 	char *mimetype_file;
@@ -228,6 +231,7 @@ struct cgit_config {
 	int enable_http_clone;
 	int enable_index_links;
 	int enable_index_owner;
+	int enable_blame;
 	int enable_commit_graph;
 	int enable_log_filecount;
 	int enable_log_linecount;
@@ -245,7 +249,6 @@ struct cgit_config {
 	int max_repodesc_len;
 	int max_blob_size;
 	int max_stats;
-	int nocache;
 	int noplainemail;
 	int noheader;
 	int renamelimit;
@@ -315,7 +318,6 @@ struct cgit_snapshot_format {
 	const char *suffix;
 	const char *mimetype;
 	write_archive_fn_t write_func;
-	int bit;
 };
 
 extern const char *cgit_gitolite_version;
@@ -376,6 +378,9 @@ extern void cgit_parse_url(const char *url);
 extern const char *cgit_repobasename(const char *reponame);
 
 extern int cgit_parse_snapshots_mask(const char *str);
+extern const struct object_id *cgit_snapshot_get_sig(const char *ref,
+						     const struct cgit_snapshot_format *f);
+extern const unsigned cgit_snapshot_format_bit(const struct cgit_snapshot_format *f);
 
 extern int cgit_open_filter(struct cgit_filter *filter, ...);
 extern int cgit_close_filter(struct cgit_filter *filter);

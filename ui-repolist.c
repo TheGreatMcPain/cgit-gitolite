@@ -11,7 +11,7 @@
 #include "html.h"
 #include "ui-shared.h"
 
-static time_t read_agefile(char *path)
+static time_t read_agefile(const char *path)
 {
 	time_t result;
 	size_t size;
@@ -20,7 +20,7 @@ static time_t read_agefile(char *path)
 
 	if (readfile(path, &buf, &size)) {
 		free(buf);
-		return -1;
+		return 0;
 	}
 
 	if (parse_date(buf, &date_buf) == 0)
@@ -184,27 +184,6 @@ static int cmp(const char *s1, const char *s2)
 	return 0;
 }
 
-static int sort_section(const void *a, const void *b)
-{
-	const struct cgit_repo *r1 = a;
-	const struct cgit_repo *r2 = b;
-	int result;
-	time_t t;
-
-	result = cmp(r1->section, r2->section);
-	if (!result) {
-		if (!strcmp(ctx.cfg.repository_sort, "age")) {
-			// get_repo_modtime caches the value in r->mtime, so we don't
-			// have to worry about inefficiencies here.
-			if (get_repo_modtime(r1, &t) && get_repo_modtime(r2, &t))
-				result = r2->mtime - r1->mtime;
-		}
-		if (!result)
-			result = cmp(r1->name, r2->name);
-	}
-	return result;
-}
-
 static int sort_name(const void *a, const void *b)
 {
 	const struct cgit_repo *r1 = a;
@@ -239,6 +218,22 @@ static int sort_idle(const void *a, const void *b)
 	get_repo_modtime(r1, &t1);
 	get_repo_modtime(r2, &t2);
 	return t2 - t1;
+}
+
+static int sort_section(const void *a, const void *b)
+{
+	const struct cgit_repo *r1 = a;
+	const struct cgit_repo *r2 = b;
+	int result;
+
+	result = cmp(r1->section, r2->section);
+	if (!result) {
+		if (!strcmp(ctx.cfg.repository_sort, "age"))
+			result = sort_idle(r1, r2);
+		if (!result)
+			result = cmp(r1->name, r2->name);
+	}
+	return result;
 }
 
 struct sortcolumn {
@@ -293,9 +288,6 @@ void cgit_print_repolist(void)
 	cgit_print_docstart();
 	cgit_print_pageheader();
 
-	if (ctx.cfg.index_header)
-		html_include(ctx.cfg.index_header);
-
 	if (ctx.qry.sort)
 		sorted = sort_repolist(ctx.qry.sort);
 	else if (ctx.cfg.section_sort)
@@ -334,7 +326,8 @@ void cgit_print_repolist(void)
 		repourl = cgit_repourl(ctx.repo->url);
 		html_link_open(repourl, NULL, NULL);
 		free(repourl);
-		html_ntxt(ctx.cfg.max_repodesc_len, ctx.repo->desc);
+		if (html_ntxt(ctx.repo->desc, ctx.cfg.max_repodesc_len) < 0)
+			html("...");
 		html_link_close();
 		html("</td><td>");
 		if (ctx.cfg.enable_index_owner) {

@@ -5,6 +5,7 @@ extern const char *cgit_httpscheme(void);
 extern char *cgit_hosturl(void);
 extern const char *cgit_rooturl(void);
 extern char *cgit_currenturl(void);
+extern char *cgit_currentfullurl(void);
 extern const char *cgit_loginurl(void);
 extern char *cgit_repourl(const char *reponame);
 extern char *cgit_fileurl(const char *reponame, const char *pagename,
@@ -26,11 +27,14 @@ extern void cgit_tree_link(const char *name, const char *title,
 extern void cgit_plain_link(const char *name, const char *title,
 			    const char *class, const char *head,
 			    const char *rev, const char *path);
+extern void cgit_blame_link(const char *name, const char *title,
+			    const char *class, const char *head,
+			    const char *rev, const char *path);
 extern void cgit_log_link(const char *name, const char *title,
 			  const char *class, const char *head, const char *rev,
 			  const char *path, int ofs, const char *grep,
 			  const char *pattern, int showmsg, int follow);
-extern void cgit_commit_link(char *name, const char *title,
+extern void cgit_commit_link(const char *name, const char *title,
 			     const char *class, const char *head,
 			     const char *rev, const char *path);
 extern void cgit_patch_link(const char *name, const char *title,
@@ -73,8 +77,11 @@ extern void cgit_print_pageheader(void);
 extern void cgit_print_filemode(unsigned short mode);
 extern void cgit_compose_snapshot_prefix(struct strbuf *filename,
 					 const char *base, const char *ref);
-extern void cgit_print_snapshot_links(const char *repo, const char *head,
-				      const char *hex, int snapshots);
+extern void cgit_print_snapshot_links(const struct cgit_repo *repo,
+				      const char *ref, const char *separator);
+extern const char *cgit_snapshot_prefix(const struct cgit_repo *repo);
 extern void cgit_add_hidden_formfields(int incl_head, int incl_search,
 				       const char *page);
+
+extern void cgit_set_title_from_path(const char *path);
 #endif /* UI_SHARED_H */

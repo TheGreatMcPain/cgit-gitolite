@@ -63,7 +63,7 @@ static void add_entry(struct commit *commit, const char *host)
 		html_attr(pageurl);
 		if (ctx.cfg.virtual_root)
 			delim = '?';
-		htmlf("%cid=%s", delim, hex);
+		html_attrf("%cid=%s", delim, hex);
 		html("'/>\n");
 		free(pageurl);
 	}
@@ -83,7 +83,7 @@ static void add_entry(struct commit *commit, const char *host)
 }
 
 
-void cgit_print_atom(char *tip, char *path, int max_count)
+void cgit_print_atom(char *tip, const char *path, int max_count)
 {
 	char *host;
 	const char *argv[] = {NULL, tip, NULL, NULL, NULL};
@@ -140,7 +140,7 @@ void cgit_print_atom(char *tip, char *path, int max_count)
 	}
 	while ((commit = get_revision(&rev)) != NULL) {
 		add_entry(commit, host);
-		free_commit_buffer(commit);
+		free_commit_buffer(the_repository->parsed_objects, commit);
 		free_commit_list(commit->parents);
 		commit->parents = NULL;
 	}

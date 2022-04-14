@@ -65,7 +65,9 @@ void show_commit_decorations(struct commit *commit)
 		return;
 	html("<span class='decoration'>");
 	while (deco) {
-		strncpy(buf, prettify_refname(deco->name), sizeof(buf) - 1);
+		struct object_id peeled;
+		int is_annotated = 0;
+		strlcpy(buf, prettify_refname(deco->name), sizeof(buf));
 		switch(deco->type) {
 		case DECORATION_NONE:
 			/* If the git-core doesn't recognize it,
@@ -77,7 +79,9 @@ void show_commit_decorations(struct commit *commit)
 				ctx.qry.showmsg, 0);
 			break;
 		case DECORATION_REF_TAG:
-			cgit_tag_link(buf, NULL, "tag-deco", buf);
+			if (!peel_ref(deco->name, &peeled))
+				is_annotated = !oidcmp(&commit->object.oid, &peeled);
+			cgit_tag_link(buf, NULL, is_annotated ? "tag-annotated-deco" : "tag-deco", buf);
 			break;
 		case DECORATION_REF_REMOTE:
 			if (!ctx.repo->enable_remote_branches)
@@ -119,8 +123,7 @@ static int show_commit(struct commit *commit, struct rev_info *revs)
 	struct commit_list *parents = commit->parents;
 	struct commit *parent;
 	int found = 0, saved_fmt;
-	unsigned saved_flags = revs->diffopt.flags;
-
+	struct diff_flags saved_flags = revs->diffopt.flags;
 
 	/* Always show if we're not in "follow" mode with a single file. */
 	if (!ctx.qry.follow)
@@ -149,10 +152,10 @@ static int show_commit(struct commit *commit, struct rev_info *revs)
 	add_lines = 0;
 	rem_lines = 0;
 
-	DIFF_OPT_SET(&revs->diffopt, RECURSIVE);
-	diff_tree_sha1(parent->tree->object.oid.hash,
-		       commit->tree->object.oid.hash,
-		       "", &revs->diffopt);
+	revs->diffopt.flags.recursive = 1;
+	diff_tree_oid(get_commit_tree_oid(parent),
+		      get_commit_tree_oid(commit),
+		      "", &revs->diffopt);
 	diffcore_std(&revs->diffopt);
 
 	found = !diff_queue_is_empty();
@@ -231,7 +234,7 @@ static void print_commit(struct commit *commit, struct rev_info *revs)
 			strbuf_add(&msgbuf, "\n\n", 2);
 
 			/* Place wrap_symbol at position i in info->subject */
-			strcpy(info->subject + i, wrap_symbol);
+			strlcpy(info->subject + i, wrap_symbol, subject_len - i + 1);
 		}
 	}
 	cgit_commit_link(info->subject, NULL, NULL, ctx.qry.head,
@@ -273,7 +276,7 @@ static void print_commit(struct commit *commit, struct rev_info *revs)
 				strbuf_addstr(&msgbuf, info->msg);
 				strbuf_addch(&msgbuf, '\n');
 			}
-			format_display_notes(commit->object.oid.hash,
+			format_display_notes(&commit->object.oid,
 					     &msgbuf, PAGE_ENCODING, 0);
 			strbuf_addch(&msgbuf, '\n');
 			strbuf_ltrim(&msgbuf);
@@ -359,7 +362,7 @@ static char *next_token(char **src)
 }
 
 void cgit_print_log(const char *tip, int ofs, int cnt, char *grep, char *pattern,
-		    char *path, int pager, int commit_graph, int commit_sort)
+		    const char *path, int pager, int commit_graph, int commit_sort)
 {
 	struct rev_info rev;
 	struct commit *commit;
@@ -434,9 +437,9 @@ void cgit_print_log(const char *tip, int ofs, int cnt, char *grep, char *pattern
 	rev.ignore_missing = 1;
 	rev.simplify_history = 1;
 	setup_revisions(rev_argv.argc, rev_argv.argv, &rev, NULL);
-	load_ref_decorations(DECORATE_FULL_REFS);
+	load_ref_decorations(NULL, DECORATE_FULL_REFS);
 	rev.show_decorations = 1;
-	rev.grep_filter.regflags |= REG_ICASE;
+	rev.grep_filter.ignore_case = 1;
 
 	rev.diffopt.detect_rename = 1;
 	rev.diffopt.rename_limit = ctx.cfg.renamelimit;
@@ -485,7 +488,7 @@ void cgit_print_log(const char *tip, int ofs, int cnt, char *grep, char *pattern
 	for (i = 0; i < ofs && (commit = get_revision(&rev)) != NULL; /* nop */) {
 		if (show_commit(commit, &rev))
 			i++;
-		free_commit_buffer(commit);
+		free_commit_buffer(the_repository->parsed_objects, commit);
 		free_commit_list(commit->parents);
 		commit->parents = NULL;
 	}
@@ -507,7 +510,7 @@ void cgit_print_log(const char *tip, int ofs, int cnt, char *grep, char *pattern
 			i++;
 			print_commit(commit, &rev);
 		}
-		free_commit_buffer(commit);
+		free_commit_buffer(the_repository->parsed_objects, commit);
 		free_commit_list(commit->parents);
 		commit->parents = NULL;
 	}
